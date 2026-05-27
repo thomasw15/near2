@@ -27,6 +27,8 @@ def generate_random(n, cond_P):
     V = generate_random_orthogonal(n)
     return U @ S @ V.T
 
+from product_experiment_utils import generate_product_trial
+
 def min_1norm(Q, U, VT, sigmas, rho):
     """Minimize nuclear norm"""
     S = np.zeros(Q.shape)
@@ -66,7 +68,13 @@ def prod_Frobenius(A, B, C, F, G, H, UB, sB, VBT, rB, UC, sC, VCT, rC):
     FB = F @ VBT.transpose() @ np.diag(np.reciprocal(sB[0:rB]))
     GC = np.diag(np.reciprocal(sC[0:rC])) @ UC.transpose() @ G
     Ahat = UB.transpose() @ A @ VCT.transpose()
-    middle = FB.transpose() @ la.inv(FB @ FB.transpose()) @ (H - FB @ Ahat @ GC) @ la.inv(GC.transpose() @ GC) @ GC.transpose()
+    middle = (
+        FB.transpose()
+        @ la.pinv(FB @ FB.transpose())
+        @ (H - FB @ Ahat @ GC)
+        @ la.pinv(GC.transpose() @ GC)
+        @ GC.transpose()
+    )
     middle = middle + Ahat 
     X = VBT.transpose() @ np.diag(np.reciprocal(sB[0:rB])) @ middle @ np.diag(np.reciprocal(sC[0:rC])) @ UC.transpose()
     return X
@@ -156,31 +164,40 @@ def tol_3prod(A, B, C, F, G, H, X_true, n, rho, tol=1e-8):
         
     return X
 
-def run_accuracy_experiment_3_prod(case=20):
-    """Run accuracy comparison experiment"""
+def run_accuracy_experiment_3_prod(
+    case=20,
+    output_file='accuracy_data_prod_3_0526.npz',
+    admm_iters=300,
+    trial_seed_base=1000,
+    n=32,
+):
+    """Schatten-3 product accuracy only (same trials as experiment_prod combined run)."""
     three_list = []
-    n_list = list(range(1, case+1))
-    
+    n_list = list(range(1, case + 1))
+
     for i in range(case):
         print(f"Running case {i+1}/{case}")
-        n = 32
-        B = generate_random(n, max(1,np.random.rand()*n))
-        C = generate_random(n, max(1,np.random.rand()*n))
-        F = generate_random(n, max(1,np.random.rand()*n))
-        G = generate_random(n, max(1,np.random.rand()*n))
-        X_true = generate_random(n, max(1,np.random.rand()*n*n))
-        H = F @ X_true @ G
-        A = B @ X_true @ C
-        
-        X3, three_list_temp = solve_3prod(A, B, C, F, G, H, X_true, rho=0.01)
+        trial = generate_product_trial(n, seed=trial_seed_base + i)
+        _, three_list_temp = solve_3prod(
+            trial["A"],
+            trial["B"],
+            trial["C"],
+            trial["F"],
+            trial["G"],
+            trial["H"],
+            trial["X_true"],
+            rho=0.01,
+            iteration=admm_iters,
+        )
+        three_list.append(three_list_temp[admm_iters - 1])
 
-        three_list.append(three_list_temp[299])
+    np.savez(
+        output_file,
+        n_list=np.array(n_list),
+        three_list=np.array(three_list),
+    )
+    print(f"Saved accuracy data to {output_file}")
 
-    # Save data
-    np.savez('accuracy_data_prod_3.npz',
-             n_list=np.array(n_list),
-             three_list=np.array(three_list))
-    
     return n_list, three_list
 
 def run_accuracy_experiment_3_unconstrained(case=20):
@@ -287,15 +304,18 @@ def run_speed_experiment_3_prod():
         print(f"Testing our algorithms for dimension {n}")
         three_temp = 0
         
-        for _ in range(10):
-            B = generate_random(n, max(1,np.random.rand()*n))
-            C = generate_random(n, max(1,np.random.rand()*n))
-            F = generate_random(n, max(1,np.random.rand()*n))
-            G = generate_random(n, max(1,np.random.rand()*n))
-            X_true = generate_random(n, max(1,np.random.rand()*n*n))
-            H = F @ X_true @ G
-            A = B @ X_true @ C
-            
+        for j in range(10):
+            trial = generate_product_trial(n, seed=30_000 * n + j)
+            B, C, F, G, H, A, X_true = (
+                trial["B"],
+                trial["C"],
+                trial["F"],
+                trial["G"],
+                trial["H"],
+                trial["A"],
+                trial["X_true"],
+            )
+
             # 3 norm timing
             start = timeit.default_timer()
             _ = tol_3prod(A, B, C, F, G, H, X_true, n, rho=0.0000001, tol=1e-8)
